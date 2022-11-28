@@ -93,7 +93,7 @@ def train_prediction_network(args):
     data_info = {}
     data_set, data_name = load_data(args.data_path, config.train_data_proportion)
     for win in range(config.p_min, config.p_max + 1):
-        win_step = math.ceil(config.win_step_factor * win)
+        win_step = math.ceil(config.win_step_factor * win)  # ceil ---  rounds a number UP to the nearest integer
         noise = get_random_noise(win - 1, config.lstm1_input_size, config.noise_factor)
         data_info[win] = [win_step, noise]
     data = np.load(GLOBAL_INFO_DIRECTORY + "mean_std.npz")

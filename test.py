@@ -21,7 +21,8 @@ from data_utils.constants import GLOBAL_INFO_DIRECTORY, TEST_OUT_DIRECTORY
 random_select = True
 static_begin_frame = 380
 static_test_file = 115
-test_interval = [60, 90, 50, 70]
+# test_interval = [60, 90, 50, 70]
+test_interval = [10]
 vel_factor_change_ratio = 1.0
 
 # change velocity factor
@@ -160,6 +161,54 @@ def draw_vel_factor(positions, true_vel_factor, test_section, time_str):
         draw_one_vel_factor(pred_vel_factor[:, i], true_vel_factor[:, i], i)
 
 
+def draw_generate_seq(xyz_all, mask_all, time_str):
+    """
+    xyz_all: [n_frames, n_joints, 3]
+    mask_all: [n_frames], 0/1
+    """
+    #
+    vis_interval = 5
+    vis_frames = [i for i in range(0, xyz_all.shape[0], vis_interval)]
+    xyz_all = xyz_all[vis_frames]
+    mask_all = mask_all[vis_frames]
+
+    # rotate xyz
+    rotation = np.array([
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, -1],
+    ])
+    xyz_all = xyz_all[:5].dot(rotation)
+
+    root_pos = xyz_all[:, 0, :]
+    xyz_all[:, 1:] += root_pos[:, np.newaxis]
+    # define skeleton for 24 joints
+    skeleton = [[23, 22], [22, 13], [13, 12], [12, 11], [11, 10], [10, 9], [9, 0],
+                [13, 18], [18, 19], [19, 20], [20, 21], [13, 14], [14, 15], [15, 16], [16, 17],
+                [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8]]
+
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 1, 1, projection='3d')
+    axis_limit = 150
+    ax.set_xlim(-axis_limit, axis_limit)
+    ax.set_ylim(-axis_limit, axis_limit)
+    ax.set_zlim(-axis_limit, axis_limit)
+
+    # plot every frame in one subplot
+    for xyz, mask in zip(xyz_all, mask_all):    # xyz----(n_joints, 3) mask---0/1
+        # define color
+        color = 'tab:red' if mask == 1 else 'tab:blue'
+        # plot
+        for joint_3d in xyz:
+            ax.plot(joint_3d[0], joint_3d[1], joint_3d[2], c=color, marker='o', markersize=2)
+        for line in skeleton:
+            ax.plot(xyz[line][:, 0], xyz[line][:, 1], xyz[line][:, 2], c=color, lw=1)
+        # break
+
+    plt.show()
+    plt.close()
+
+
 def generate_test_data(raw_data, config, test_section):
     frame_num = len(raw_data)
     interval = test_section["interval"]
@@ -189,14 +238,14 @@ def generate_test_data(raw_data, config, test_section):
     vel_factor = []
     vel_loc = config.state_encoder_input_size + config.derivative_encoder_input_size
     for i in range(frame_sum):
-        gt_info.append(raw_data[begin_frame + i])
+        gt_info.append(raw_data[begin_frame + i])       # (154, )
         time_label.append(raw_data[begin_frame + i][config.pos_dim:config.pos_dim + config.root_pos_dim])
         vel_factor.append(raw_data[begin_frame + i][vel_loc:vel_loc + config.vel_factor_dim])
         if mask[i] == 1:
             key_frames.append(i)
             test_data.append(raw_data[begin_frame + i])
             if i != 0:
-                target.append(raw_data[begin_frame + i][:config.target_encoder_input_size])
+                target.append(raw_data[begin_frame + i][:config.target_encoder_input_size])     #(5, )
         else:
             test_data.append(np.zeros(raw_data[0].shape))
     test_section["key_frame"] = key_frames
@@ -515,7 +564,7 @@ def test_prediction_network(args):
 
     # test network
     predict_model_path = config.model_dir + args.predict_model_path
-    predict_seq = test_prediction(mask, time_factor, vel_factor, test_data, target, predict_model_path)[0]
+    predict_seq = test_prediction(mask, time_factor, vel_factor, test_data, target, predict_model_path)[0]  # (275, 149)
     predict_seq = predict_seq * std[:-(config.velocity_dim + config.vel_factor_dim)] + \
                   mean[:-(config.velocity_dim + config.vel_factor_dim)]
 
@@ -536,9 +585,11 @@ def test_prediction_network(args):
     vel_loc = config.state_encoder_input_size + config.derivative_encoder_input_size
     true_vel_factor = vel_factor[0] * std[vel_loc:vel_loc + 1] + mean[vel_loc:vel_loc + 1]
     pos = changed_positions.copy()
-    pos[:, 0] = root_pos
-    # draw_root_trajectory(root_pos, true_root_pos, test_section, now_time)
-    # draw_vel_factor(pos, true_vel_factor, test_section, now_time)
+    pos[:, 0] = root_pos        # pos --- (275, 24, 3)
+    # draw
+    draw_root_trajectory(root_pos, true_root_pos, test_section, now_time)
+    draw_vel_factor(pos, true_vel_factor, test_section, now_time)
+    draw_generate_seq(pos, mask, now_time)
 
     save_test_result_to_bvh(changed_positions, root_pos, root_rot, test_section['key_frame'], bvh_file_name)
 

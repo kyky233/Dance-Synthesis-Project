@@ -4,7 +4,8 @@ import torch
 class Config:
     # train info
     use_cude = True
-    model_dir = "/home/godzilla/Train Result/"
+    # model_dir = "/home/godzilla/Train Result/"
+    model_dir = "/home/yandanqi/0_code/music2dance/Dance-Synthesis-Project/Train Result/"
     device = torch.device("cuda:0" if use_cude and torch.cuda.is_available() else "cpu")
     train_data_proportion = 0.8
     log_freq = 200
