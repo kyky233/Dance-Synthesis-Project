@@ -30,7 +30,7 @@ def get_data_from_bvh(filename, downsample, skeleton):
     acceleration = data.acceleration.reshape(frame_num, -1)
     vel_factor = data.vel_factor
 
-    # [frame_num, 215]  215 = 23 * 3 + 3 + 1 + 4 + 24 * 3 + 1 + 24 * 3
+    # [frame_num, 226]  226 = 23 * 3 + 3 + 1 + 4 + 24 * 3 + 5 + 24 * 3
     return np.concatenate([changed_pos, data.root_pos, data.root_rot,
                            data.contact, velocity, vel_factor, acceleration], axis=-1)
 

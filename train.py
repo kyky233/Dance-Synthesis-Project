@@ -39,14 +39,15 @@ def get_time_vector(window, dim=1):
 
 def load_data(data_path, train_data_proportion):
     """
-    data(npy): [frame_num, 215]  215 = 23 * 3 + 3 + 1 + 4 + 23 * 3 + 23 * 3
+    data(npy): [frame_num, 226]  226 = 23 * 3 + 3 + 1 + 4 + 24 * 3 + 5 + 24 * 3
     include:
         joint_pos        # [joint_num, 3] - [23, 3]
         root_pos         # [3]
         root_rot         # [1]
         contact          # [4]
         velocity         # [joint_num, 3] - [23, 3]
-        acceleration     # [joint_num, 3] - [23, 3]
+        vel_factor       # [5]
+        acceleration     # [joint_num, 3] - [24, 3]
     ps:
         joint_num: 24
     """
@@ -61,12 +62,21 @@ def load_data(data_path, train_data_proportion):
         strs = bvh.split("\\")
         data_name.append(strs[-1][:-4])
         print("load file %s (%d/%d)" % (strs[-1][:-4], i + 1, file_num))
-        data = np.load(bvh)
+        data = np.load(bvh)     # (600, 226)
         print("  shape:", data.shape)
         sum_frames += len(data)
-        data_set.append(data[..., :-72])
+        data_set.append(data[..., :-72])    # (600, 226-72)
     print("Load %d frames for train." % sum_frames)
-    print()
+    '''
+    # data_set --- 23 * 3 + 3 + 1 + 4 + 24 * 3 + 5
+        include:
+        joint_pos        # [joint_num, 3] - [23, 3]
+        root_pos         # [3]
+        root_rot         # [1]
+        contact          # [4]
+        velocity         # [joint_num, 3] - [23, 3]
+        vel_factor       # [5]
+    '''
     return data_set, data_name
 
 
@@ -88,16 +98,27 @@ def get_random_noise(win, dim, noise_factor):
 
 
 def train_prediction_network(args):
+    """
+    data_set(list of np, each np indicates a seq)
+    data_set[i]  --- (n_frames, 154) --- 154 = 23 * 3 + 3 + 1 + 4 + 24 * 3 + 5
+    include:
+        joint_pos        # [joint_num, 3] - [23, 3]
+        root_pos         # [3]
+        root_rot         # [1]
+        contact          # [4]
+        velocity         # [joint_num, 3] - [23, 3]
+        vel_factor       # [5]
+    """
     config = Config()
     parents, bone_length = get_parent_and_bone(GLOBAL_INFO_DIRECTORY + SAVE_YAML_FILE)
     data_info = {}
     data_set, data_name = load_data(args.data_path, config.train_data_proportion)
-    for win in range(config.p_min, config.p_max + 1):
+    for win in range(config.p_min, config.p_max + 1):   # range(7, 73)
         win_step = math.ceil(config.win_step_factor * win)  # ceil ---  rounds a number UP to the nearest integer
-        noise = get_random_noise(win - 1, config.lstm1_input_size, config.noise_factor)
+        noise = get_random_noise(win - 1, config.lstm1_input_size, config.noise_factor) # (6, 1024)
         data_info[win] = [win_step, noise]
     data = np.load(GLOBAL_INFO_DIRECTORY + "mean_std.npz")
-    mean, std = data["mean"], data["std"]  # 215, 215
+    mean, std = data["mean"], data["std"]  # 226, 226
     train_prediction(data_set, data_info, parents, bone_length, mean[:-72], std[:-72])
 
 

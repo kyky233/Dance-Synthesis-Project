@@ -67,10 +67,10 @@ class Prediction(nn.Module):
         self.model_dir = hparams.model_dir
 
     def init_hidden(self, batch_size, device):
-        self.lstm1_h = torch.zeros(1, batch_size, self.hparams.lstm1_output_size).to(device)
-        self.lstm1_c = torch.zeros(1, batch_size, self.hparams.lstm1_output_size).to(device)
-        self.lstm2_h = torch.zeros(1, batch_size, self.hparams.lstm2_output_size).to(device)
-        self.lstm2_c = torch.zeros(1, batch_size, self.hparams.lstm2_output_size).to(device)
+        self.lstm1_h = torch.zeros(1, batch_size, self.hparams.lstm1_output_size).to(device)    # torch.Size([1, 128, 256])
+        self.lstm1_c = torch.zeros(1, batch_size, self.hparams.lstm1_output_size).to(device)    # torch.Size([1, 128, 256])
+        self.lstm2_h = torch.zeros(1, batch_size, self.hparams.lstm2_output_size).to(device)    # torch.Size([1, 128, 256])
+        self.lstm2_c = torch.zeros(1, batch_size, self.hparams.lstm2_output_size).to(device)    # torch.Size([1, 128, 256])
 
     def state_encoder(self, x):
         out = self.prelu(self.state_fc1(x))
@@ -109,6 +109,25 @@ class Prediction(nn.Module):
         return out
 
     def concatenate_output(self, z_in1, z_in2):
+        """
+        ------------- input ----------------
+        z_in1:
+            torch.Size([128, 1, 142]) - joint_pos([23, 3])_(t+1) + contact([4])_(t+1) + velocity([23, 3])_(t+1)
+        z_in2:
+            torch.Size([128, 1, 7]) - root_pos([3])_(t+1) + root_rot([1])_(t+1) + velocity([1, 3])_(t+1)
+        ------------- output -------------------
+        z0:
+            torch.Size([128, 1, 69]) - joint_pos([23, 3])_(t+1)
+        z1:
+            torch.Size([128, 1, 73]) - contact([4])_(t+1) + velocity([23, 3])_(t+1)
+        z3:
+            torch.Size([128, 1, 4]) - root_pos([3])_(t+1) + root_rot([1])_(t+1)
+        z4:
+            torch.Size([128, 1, 3]) - velocity([1, 3])_(t+1)
+        z:
+            torch.Size([128, 1, 149]) - joint_pos([23, 3])_(t+1) + root_pos([3])_(t+1) + root_rot([1])_(t+1) + contact([4])_(t+1) \
+                                        + velocity([24, 3])_(t+1)
+        """
         z0, z1 = z_in1.split([self.hparams.state_de_out_part1,
                               self.hparams.state_de_out_part2], dim=-1)
         z3, z4 = z_in2.split([self.hparams.root_de_out_part1,
@@ -128,26 +147,62 @@ class Prediction(nn.Module):
         return out
 
     def forward(self, x1, x2, x3, x4, x5, t, noise, true_trajectory):
-        x1 = self.state_encoder(x1)  # [batch_size, seq_len, encoder_output_size]  [60, *, 256]
-        x2 = self.derivative_encoder(x2)  # [batch_size, seq_len, encoder_output_size]
+        """
+        x1:
+            torch.Size([128, 1, 77]) - joint_pos([23, 3])_t + root_pos([3])_t + root_rot([1])_t + contact([4])_t
+        x2:
+            torch.Size([128, 1, 72]) - velocity([24, 3])_t
+        x3:
+            torch.Size([128, 1, 73]) - joint_pos([23, 3])_k + root_pos([3])_k + root_rot([1])_k
+        x4:
+            torch.Size([128, 7, 3]) - root_pos([3])_group
+        x5:
+            torch.Size([128, 7, 5]) - vel_factor([5])_group
+        t - pos_code:
+            torch.Size([128, 1, 4]) - root_pos([3])_t + time_label([1])_t
+        noise:
+            torch.Size([1, 1024]) - noise([1024])_t
+        true_trajectory - true_x4:
+            torch.Size([128, 7, 3]) - root_pos([3])_group_true
+        -------------- out -------------------
+        z1: --- state decoder
+            torch.Size([128, 1, 142]) - joint_pos([23, 3])_(t+1) + contact([4])_(t+1) + velocity([23, 3])_(t+1)
+        z2: --- root decoder
+            torch.Size([128, 1, 7]) - root_pos([3])_(t+1) + root_rot([1])_(t+1) + velocity([1, 3])_(t+1)
+        z:
+            torch.Size([128, 1, 149]) - joint_pos([23, 3])_(t+1) + root_pos([3])_(t+1) + root_rot([1])_(t+1) + contact([4])_(t+1) \
+                                        + velocity([24, 3])_(t+1)
+        """
+        # state encoder
+        x1 = self.state_encoder(x1)  # out: torch.Size([128, 1, 256])
+        # velocity encoder
+        x2 = self.derivative_encoder(x2)    # out: torch.Size([128, 1, 256])
 
-        x3 = self.target_encoder(x3)  # [batch_size, seq_len, encoder_output_size]
-        x4 = self.root_transformer_encoder(true_trajectory, x4)
+        # target controller
+        x3 = self.target_encoder(x3)    # out: torch.Size([128, 1, 256])
 
-        x5 = self.vel_transformer_encoder(x5)
+        # root trajectory controller
+        x4 = self.root_transformer_encoder(true_trajectory, x4)     # out: torch.Size([128, 1, 256])
+        # velocity factor controller
+        x5 = self.vel_transformer_encoder(x5)   # out: torch.Size([128, 1, 256])
 
-        t = self.time_encoder(t)
+        # position encoder
+        t = self.time_encoder(t)    # out: torch.Size([128, 1, 512])
 
-        x12 = torch.cat([x1, x2, x4, x5], dim=-1)
-        x12 = x12 + noise
-        x12, (self.lstm1_h, self.lstm1_c) = self.lstm1(x12, (self.lstm1_h, self.lstm1_c))
+        x12 = torch.cat([x1, x2, x4, x5], dim=-1)   # out: torch.Size([128, 1, 1024])
+        x12 = x12 + noise   # out: torch.Size([128, 1, 1024])
+        x12, (self.lstm1_h, self.lstm1_c) = self.lstm1(x12, (self.lstm1_h, self.lstm1_c))  # out: x12---torch.Size([128, 1, 256])
 
-        x = torch.cat([x12, x3], dim=-1) + t
-        x, (self.lstm2_h, self.lstm2_c) = self.lstm2(x, (self.lstm2_h, self.lstm2_c))
+        x = torch.cat([x12, x3], dim=-1) + t    # out: torch.Size([128, 1, 512])
+        x, (self.lstm2_h, self.lstm2_c) = self.lstm2(x, (self.lstm2_h, self.lstm2_c))  # out: x---torch.Size([128, 1, 256])
 
-        z1 = self.state_decoder(x)
-        z2 = self.root_decoder(x)
-        z = self.concatenate_output(z1, z2)  # , z3)
+        # state decoder
+        z1 = self.state_decoder(x)  # out: torch.Size([128, 1, 142])
+        # root decoder
+        z2 = self.root_decoder(x)   # out: torch.Size([128, 1, 7])
+
+        # final output
+        z = self.concatenate_output(z1, z2)  # out: torch.Size([128, 1, 149])
 
         return z
 
@@ -164,17 +219,17 @@ class DanceDataset(Dataset):
 
 
 def get_train_data(data, config):
-    state_input_size = config.state_encoder_input_size
-    derivative_input_size = config.derivative_encoder_input_size
-    target_input_size = config.target_encoder_input_size
-    label_size = config.label_size
-    vel_factor_size = config.vel_factor_dim
-    state_derivative_input = data[:, :, :state_input_size + derivative_input_size]
+    state_input_size = config.state_encoder_input_size      # 77
+    derivative_input_size = config.derivative_encoder_input_size        # 72
+    target_input_size = config.target_encoder_input_size        # 73
+    label_size = config.label_size      # 149
+    vel_factor_size = config.vel_factor_dim     # 5
+    state_derivative_input = data[:, :, :state_input_size + derivative_input_size]  # (1469, 9, 154)-->(1469, 9, 77+72)
 
-    target_input = data[:, -1, :target_input_size]
+    target_input = data[:, -1, :target_input_size]  # (1469, 9, 73)
     target_input = np.expand_dims(target_input, 1).repeat(data.shape[1], axis=1)
 
-    train_x = np.concatenate((state_derivative_input, target_input), axis=-1)
+    train_x = np.concatenate((state_derivative_input, target_input), axis=-1)   # (1471, 8, 222)
     vel_factor_seq = data[:, :, state_input_size + derivative_input_size:
                                 state_input_size + derivative_input_size + vel_factor_size]
     train_y = data[:, :, 0:label_size]
@@ -256,15 +311,54 @@ def test_schedule_sample(config):
 def train_one_iteration(model, rec_criterion, bone_criterion, vel_criterion, contact_criterion,
                         smooth_criterion, key_criterion, log_out, train_x, train_y, _noise, time_label,
                         vel_factor_seq, _mean, _std, optimizer, loss_dict, sample_ratio, config):
+    """
+    train_x: 222 = 77 + 72 + 73  - joint_pos([23, 3])_all + root_pos([3])_all + root_rot([1])_all + contact([4])_all \
+                                   + velocity([24, 3])_all \
+                                   + joint_pos([23, 3])_k + root_pos([3])_k + root_rot([1])_k
+    vel_factor_seq: 5 --- vel_factor([5])
+    train_y: 149 = 77 + 72 --- joint_pos([23, 3])_all + root_pos([3])_all + root_rot([1])_all + contact([4])_all \
+                               + velocity([24, 3])_all \
+    ------------------------------------------------------------------------------------
+    _train_x1:
+        torch.Size([128, 29, 77]) - joint_pos([23, 3])_all + root_pos([3])_all + root_rot([1])_all + contact([4])_all
+    _train_x2:
+        torch.Size([128, 29, 72]) - velocity([24, 3])_all
+    _train_x3:
+        torch.Size([128, 29, 73]) - joint_pos([23, 3])_k + root_pos([3])_k + root_rot([1])_k
+    _train_y:
+        torch.Size([128, 29, 149]) - joint_pos([23, 3])_all + root_pos([3])_all + root_rot([1])_all + contact([4])_all \
+                                     + velocity([24, 3])_all
+    _trajectory:
+        torch.Size([128, 30, 3]) - root_pos([3])_all
+    _vel_factor:
+        torch.Size([128, 30, 5]) - vel_factor([5])
+    --------------- input to model -------------------------------------------------
+    x1:
+        torch.Size([128, 1, 77]) - joint_pos([23, 3])_t + root_pos([3])_t + root_rot([1])_t + contact([4])_t
+    x2:
+        torch.Size([128, 1, 72]) - velocity([24, 3])_t
+    x3:
+        torch.Size([128, 1, 73]) - joint_pos([23, 3])_k + root_pos([3])_k + root_rot([1])_k
+    x4:
+        torch.Size([128, 7, 3]) - root_pos([3])_group
+    x5:
+        torch.Size([128, 7, 5]) - vel_factor([5])_group
+    pos_code:
+        torch.Size([128, 1, 4]) - root_pos([3])_t + time_label([1])_t
+    noise:
+        torch.Size([1, 1024]) - noise([1024])_t
+    true_x4:
+        torch.Size([128, 7, 3]) - root_pos([3])_group_true
+    """
     device = config.device
-    _train_x1 = train_x[..., :config.state_encoder_input_size].to(device)
+    _train_x1 = train_x[..., :config.state_encoder_input_size].to(device)  # torch.Size([128, 29, 77])
     _train_x2 = train_x[..., config.state_encoder_input_size:
                              config.state_encoder_input_size + config.derivative_encoder_input_size].to(device)
     _train_x3 = train_x[..., -config.target_encoder_input_size:].to(device)
     _train_y = train_y.to(device)
 
-    _trajectory = _train_x1[..., config.pos_dim:config.pos_dim + config.root_pos_dim]
-    _trajectory = torch.cat([_trajectory, _train_y[:, -1:, config.pos_dim:config.pos_dim + config.root_pos_dim]], dim=1)
+    _trajectory = _train_x1[..., config.pos_dim:config.pos_dim + config.root_pos_dim]   # torch.Size([128, 29, 3])
+    _trajectory = torch.cat([_trajectory, _train_y[:, -1:, config.pos_dim:config.pos_dim + config.root_pos_dim]], dim=1) # torch.Size([128, 30, 3])
     true_trajectory = _trajectory.clone()
 
     _vel_factor = vel_factor_seq.to(device)
@@ -275,7 +369,7 @@ def train_one_iteration(model, rec_criterion, bone_criterion, vel_criterion, con
     time_label = time_label[np.newaxis, :, np.newaxis]
     time_label = time_label.repeat(now_batch_size, axis=0)
 
-    _time_label = torch.tensor(time_label, dtype=torch.float32)
+    _time_label = torch.tensor(time_label, dtype=torch.float32)   # torch.Size([128, 29, 1])
     position_code = torch.cat((root_positions, _time_label), dim=-1)
 
     _position_code = position_code.to(device)
@@ -283,7 +377,7 @@ def train_one_iteration(model, rec_criterion, bone_criterion, vel_criterion, con
     model.init_hidden(now_batch_size, config.device)
 
     seq_len = _train_y.shape[1]
-    predict_seq = torch.zeros(_train_y.shape).to(config.device)
+    predict_seq = torch.zeros(_train_y.shape).to(config.device)     # torch.Size([128, 29, 149])
 
     use_ground_truth = True
     ran = random.random()
@@ -292,8 +386,8 @@ def train_one_iteration(model, rec_criterion, bone_criterion, vel_criterion, con
 
     for i in range(seq_len):
         if i == 0 or use_ground_truth:
-            x1 = _train_x1[:, i:i + 1].clone()
-            x2 = _train_x2[:, i:i + 1].clone()
+            x1 = _train_x1[:, i:i + 1].clone()      # _train_x1 --- torch.Size([128, 29, 77])
+            x2 = _train_x2[:, i:i + 1].clone()      # _train_x2 --- torch.Size([128, 29, 72])
 
         else:
             x1 = predict_seq[:, i - 1:i, :config.state_encoder_input_size].clone()
@@ -361,6 +455,16 @@ def train_one_iteration(model, rec_criterion, bone_criterion, vel_criterion, con
 
 
 def train_prediction(data_set, raw_data_info, parents, gt_bone_length, mean, std):
+    """
+    data_set(npy): [frame_num, 154]  154 = 23 * 3 + 3 + 1 + 4 + 24 * 3 + 5
+    include:
+        joint_pos        # [joint_num, 3] - [23, 3]
+        root_pos         # [3]
+        root_rot         # [1]
+        contact          # [4]
+        velocity         # [joint_num, 3] - [24, 3]
+        vel_factor       # [5]
+    """
     config = Config()
     start_time = time.asctime(time.localtime(time.time()))
     print("start_time:", start_time)
@@ -377,6 +481,7 @@ def train_prediction(data_set, raw_data_info, parents, gt_bone_length, mean, std
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate,
                                  betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
 
+    # define loss criterion
     rec_criterion = ReconstructionLoss(config).to(device)
     bone_criterion = BoneLoss(_gt_bone_length, parents, _mean, _std, config).to(device)
     vel_criterion = VelocityLoss(_mean, _std, config).to(device)
@@ -387,8 +492,8 @@ def train_prediction(data_set, raw_data_info, parents, gt_bone_length, mean, std
     model.train()
 
     train_x_dim = config.state_encoder_input_size + config.derivative_encoder_input_size + \
-                  config.target_encoder_input_size
-    train_y_dim = config.label_size
+                  config.target_encoder_input_size      # 77 + 72 + 73 = 222
+    train_y_dim = config.label_size     # 149
 
     loss_dict = {"iteration": [], "rec_loss": [], "bone_loss": [], "vel_cons_loss": [], "smooth_loss": [],
                  "contact_loss": [],
@@ -423,8 +528,31 @@ def train_prediction(data_set, raw_data_info, parents, gt_bone_length, mean, std
                 continue
             item = raw_data_info[win]
             win_step, noise = item[0], item[1]
-            train_data = divide_data(data_set, win, win_step)
-            train_x_y = get_train_data(train_data, config)
+            train_data = divide_data(data_set, win, win_step)   # (1473, 7, 154)
+            train_x_y = get_train_data(train_data, config)     # (1473, 7, 376)
+            '''
+            state_derivative_input_size = state_input_size + derivative_input_size = 77+72
+            target_input_size = target_encoder_input_size = 73
+            vel_factor_size = 5
+            label_size = 149
+            target_input = data[:, -1, :target_input_size] # (1469, 1, 73)
+            train_x = np.concatenate((state_derivative_input, target_input), axis=-1)   
+            vel_factor_seq = data[:, :, state_input_size + derivative_input_size:
+                                        state_input_size + derivative_input_size + vel_factor_size]
+            train_y = data[:, :, 0:label_size]
+            train_x_y = np.concatenate((train_x, vel_factor_seq, train_y), axis=-1)
+            -------------- data input into the model ----------------------
+            state_input_size = 77 --- joint_pos([23, 3]) + root_pos([3]) + root_rot([1]) + contact([4])
+            derivative_input_size = 72 --- velocity([24, 3])
+            target_input_size(k frame) = 73 --- joint_pos([23, 3]) + root_pos([3]) + root_rot([1])
+            train_x --- 222 = 77 + 72 + 73  --- joint_pos([23, 3])_all + root_pos([3])_all + root_rot([1])_all \
+                                                + contact([4])_all + velocity([24, 3])_all \
+                                                + joint_pos([23, 3])_k + root_pos([3])_k + root_rot([1])_k 
+            vel_factor_seq --- 5 --- vel_factor([5])
+            train_y --- 149 = 77 + 72 --- joint_pos([23, 3])_all + root_pos([3])_all + root_rot([1])_all \
+                                          + contact([4])_all + velocity([24, 3])_all \
+            '''
+
             print("train data shape:", train_data.shape, "train_x_y:", train_x_y.shape, " iteration:", it)
             train_loader = DataLoader(DanceDataset(train_x_y), batch_size=config.batch_size)
             iteration_num[win] = len(train_loader)
@@ -446,9 +574,9 @@ def train_prediction(data_set, raw_data_info, parents, gt_bone_length, mean, std
                     print("Iteration: %08d/%08d, transition length: %d" % (it, config.max_iteration, _data.shape[1]))
                     log_out = True
                     loss_dict["iteration"].append(it)
-                train_x = _data[:, :-1, :train_x_dim]
-                vel_factor_seq = _data[..., train_x_dim:train_x_dim + config.vel_factor_dim]
-                train_y = _data[:, 1:, -train_y_dim:]
+                train_x = _data[:, :-1, :train_x_dim]   # torch.Size([128, 29, 222])
+                vel_factor_seq = _data[..., train_x_dim:train_x_dim + config.vel_factor_dim]    # torch.Size([128, 30, 5])
+                train_y = _data[:, 1:, -train_y_dim:]   # torch.Size([128, 29, 149])
                 train_one_iteration(model, rec_criterion, bone_criterion, vel_criterion, contact_criterion,
                                     smooth_criterion, key_criterion, log_out, train_x, train_y, _noise, time_label,
                                     vel_factor_seq, _mean, _std, optimizer, loss_dict, sample_ratio, config)
